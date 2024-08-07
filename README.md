@@ -17,6 +17,6 @@ This [repository](https://github.com/uwfiberlab/OOI_DAS_2024) prepared by Qibin 
 ## Cable Geometry
 
 ![map](docs/OOIcable.jpg)
-Map of the OOI RCA cables (black lines), the 15 selected channels for earthquake detection (black squares) and the interrogated segment (red line) between the coast and repeater (red circles). Bathymetric contours are denoted in meters and are unevenly spaced. The full length of cables, seafloor nodes, coastal lines and plate boundaries are shown in the inset map.
+Map of the OOI RCA cables (black lines) and the interrogated segment (red line) between the coast and repeater (red circles). Bathymetric contours are denoted in meters and are unevenly spaced. The full length of cables, seafloor nodes, coastal lines and plate boundaries are shown in the inset map.
 
 The channel locations can be reproduced using [this](https://github.com/uwfiberlab/OOI_DAS_2024/blob/main/ooi24_data_example_and_cable_info.ipynb) code.
