@@ -133,13 +133,15 @@ def read_decimate(file_path, dsamp_factor=20, start_ch=0, end_ch=100, machine_na
     return downsample_data
 
 
-def ppsd_on_fly(data_dir, machine_name, num_proc, start_ch, end_ch, start_file, num_file, 
+def ppsd_on_fly(data_dir,out_dir, machine_name, num_proc, start_ch, end_ch, start_file, num_file, 
 dsamp_factor, channel_bin, channel_interval, correction_factor, amp_type='strain_rate'):
     
     file_list = []
     with os.scandir(data_dir) as entries:
         for entry in sorted(entries, key=lambda e: e.name)[start_file:start_file + num_file]:
             file_list.append(entry.name)
+
+    print('#'*10 + ' Working on '+str(file_list[0])+' to '+str(file_list[-1])+ ' ' + '#'*10)
 
     file_path = [os.path.join(data_dir,i) for i in file_list]
 
@@ -154,7 +156,7 @@ dsamp_factor, channel_bin, channel_interval, correction_factor, amp_type='strain
         full_time = pool.map(partial_func, file_path[:])
 
     # %% concatenate the list elements in time
-    print("concatenating data")
+    print("- Concatenating time series")
     full_time_data = np.concatenate(full_time, axis=1)
 
     print(f'final shape: {full_time_data.shape}')
@@ -163,13 +165,15 @@ dsamp_factor, channel_bin, channel_interval, correction_factor, amp_type='strain
     hour_data = full_time_data * correction_factor
 
     ### Plot PSD
+    print("- Ploting PSD")
     fig,ax = plt.subplots(1,1,figsize=(20,10))
 
     ### divide into several segments, indicated by different colors
+    half_bin = int(channel_bin/2)
     ch_list = np.arange(half_bin+1,(end_ch-start_ch),channel_interval)[::-1]
     colors = matplotlib.colormaps['Blues'](np.linspace(0.15, 1, len(ch_list)))[::-1]
 
-    half_bin = int(channel_bin/2)
+    
 
     for i, chan in tqdm(enumerate(ch_list)):
         
@@ -194,20 +198,26 @@ dsamp_factor, channel_bin, channel_interval, correction_factor, amp_type='strain
     plt.colorbar(img, ax=ax, aspect=50).set_label('Probability')
     plt.legend(loc="upper left")
     plt.tight_layout()  
-    plt.savefig(str(file_path[0])+str(file_path[-1])+'PSD.png',dpi=300)
+    plt.savefig(out_dir + str(file_list[0])+str(file_list[-1])+'PSD.png',dpi=300)
 
 
 if __name__ == '__main__':
 
-    ppsd_on_fly(data_dir = '/1-fnp/petasaur/p-wd02/muxDAS/20240510/dphi/', 
-                machine_name = 'optodas', 
-                num_proc = 2, 
-                start_ch = 0, 
-                end_ch = 9000, 
-                start_file = 10, 
-                num_file = 360, 
-                dsamp_factor = 1, 
-                channel_bin = 200, 
-                channel_interval = 2000, 
-                correction_factor = (1550.12 * 1e-9) / (0.78 * 4 * np.pi * 1.4677), 
-                amp_type='strain_rate')
+    for starting_id in np.arange(0, 3600, 360):
+        since = time.time()
+        ppsd_on_fly(data_dir = '/1-fnp/petasaur/p-wd02/muxDAS/20240510/dphi/', 
+                    out_dir = '/home/qibins/DAS_spectra/results/',
+                    machine_name = 'optodas', 
+                    num_proc = 10, 
+                    start_ch = 0, 
+                    end_ch = 9000, 
+                    start_file = starting_id, 
+                    num_file = 360, 
+                    dsamp_factor = 1, 
+                    channel_bin = 200, 
+                    channel_interval = 2000, 
+                    correction_factor = (1550.12 * 1e-9) / (0.78 * 4 * np.pi * 1.4677), 
+                    amp_type='strain_rate')
+
+        time_elapsed = time.time() - since
+        print('- Time taken: {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
