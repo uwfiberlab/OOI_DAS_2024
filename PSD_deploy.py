@@ -17,18 +17,14 @@ from tqdm import tqdm  # progress bar
 import matplotlib  # for plotting
 # matplotlib.use('Agg')  # faster backend
 import matplotlib.pyplot as plt
-%matplotlib inline
+
 matplotlib.rcParams['font.family'] = 'sans-serif'
 matplotlib.rcParams['font.sans-serif'] = ['DejaVu Sans']  
 matplotlib.rcParams['font.size'] = 20
 
-
 from functools import partial  # for parallel processing
 from multiprocessing import Pool  # for parallel processing
 
-
-### Define data directory
-rawdata_dir = '/1-fnp/petasaur/p-wd02/muxDAS/'
 
 def extract_metadata(h5file, machine_name='optodas'):
     """Extract metadata from DAS HDF
@@ -107,6 +103,7 @@ def ppsd(data,fs,fmin,fmax):
     
     return H/np.nansum(H, axis=1, keepdims=True), (xe[1:] + xe[:-1])/2, (ye[1:] + ye[:-1])/2
     
+
 def psd_stats(H,xm,ym):   
     ym = np.log10(ym)
     mean = np.zeros(len(xm))
@@ -118,77 +115,99 @@ def psd_stats(H,xm,ym):
     return xm,10**mean,variance
 
 
-machine_name = 'optodas'               # interrogator name
-num_proc = 2                          # number of threads (too large number kills the memory) 
-start_ch, end_ch = 0, 9000             # channel range                       
-start_file = 10                        # starting file indice for reading
-num_file = 360                         # number of semi-continuous 1-min files to merge
-dsamp_factor = 1                       # downsample rate when reading raw time series
-new_fs = int(fs / dsamp_factor)        # final sample rate after downsampling
-data_dir = os.path.join(rawdata_dir,'20240510/dphi/')
-
-### parameters for PSD statistics
-channel_bin = 200                      # channel bin for PSD statistics
-half_bin = channel_bin//2              # half bin for PSD statistics
-channel_interval = 2000                # channel number separating to segments
-amp_type = 'strain_rate'               # amplitude type for PSD statistics
-correction_factor = (1550.12 * 1e-9) / (0.78 * 4 * np.pi * 1.4677) # correction factor for strain rate
-
-
-file_list = np.array(os.listdir(data_dir))
-file_list = file_list[np.argsort(file_list)]
-file_path = [os.path.join(data_dir,i) for i in file_list]
-
-since = time.time()
-
-# %% multi-process to read and decimate lots of files 
-partial_func = partial(read_decimate, dsamp_factor=dsamp_factor, start_ch=start_ch, end_ch=end_ch, machine_name=machine_name)
-with Pool(processes=num_proc) as pool:   # pool is closed automatically and join as a list
-    print("# threads: ", num_proc)
-    full_time = pool.map(partial_func, file_path[start_file:start_file+num_file])
-
-# %% concatenate the list elements in time
-print("concatenating data")
-full_time_data = np.concatenate(full_time, axis=1)
-
-print(f'time used: {time.time()- since:.1f}')
-print(f'final shape: {full_time_data.shape}')
-print(f'sample rate: {new_fs:.0f}')
-
-
-### Convert phase to strain/ strain rate
-hour_data = full_time_data * correction_factor
-
-### Plot PSD
-fig,ax = plt.subplots(1,1,figsize=(20,10))
-
-### divide into several segments, indicated by different colors
-ch_list = np.arange(half_bin+1,(end_ch-start_ch),channel_interval)[::-1]
-colors = matplotlib.colormaps['Blues'](np.linspace(0.15, 1, len(ch_list)))[::-1]
-
-for i, chan in tqdm(enumerate(ch_list)):
+def read_decimate(file_path, dsamp_factor=20, start_ch=0, end_ch=100, machine_name='onyx'):
+    if machine_name == 'optodas':
+        with h5py.File(file_path, 'r') as f:
+            minute_data = f['data'][:, start_ch:end_ch].T
+    elif machine_name == 'onyx':
+        with h5py.File(file_path,'r') as f:      
+            minute_data = f['Acquisition']['Raw[0]']['RawData'][:, start_ch:end_ch].T
+    else:
+        raise ValueError('Machine name not recognized')
     
-    trs = hour_data[chan-half_bin:chan+half_bin,:]
-    if amp_type == 'strain':
-        trs = np.diff(trs, axis=1) * new_fs
-
-    H,xm,ym = ppsd(trs,new_fs,2e-4,1e2)
-    xm,mn,vr = psd_stats(H,xm,ym)
-
-    ax.plot(1/xm, mn,linewidth=5, label='%.1f m' % (chan*dx), zorder=2, color=colors[i])
-    if i == 0:
-        img=ax.pcolormesh(1/xm,ym,H.T,cmap='hot_r',vmin=0,vmax=0.1, zorder=1)
+    if dsamp_factor>1:
+        downsample_data = decimate(minute_data, q=dsamp_factor, ftype='fir', zero_phase=True)   
+    else:
+        downsample_data = minute_data
+    
+    return downsample_data
 
 
+def ppsd_on_fly(data_dir, machine_name, num_proc, start_ch, end_ch, start_file, num_file, 
+dsamp_factor, channel_bin, channel_interval, correction_factor, amp_type='strain_rate'):
+    
+    file_list = []
+    with os.scandir(data_dir) as entries:
+        for entry in sorted(entries, key=lambda e: e.name)[start_file:start_file + num_file]:
+            file_list.append(entry.name)
 
-ax.set_xscale('log')
-ax.set_yscale('log')   
-ax.set_ylim([1e-19,1e-11])
-ax.set_xlabel('Period (s)')
-ax.set_ylabel('PSD rel. strain rate ^2')
-ax.grid(which='major', color='#DDDDDD', linewidth=3, zorder=0)
-ax.grid(which='minor', color='#EEEEEE', linewidth=2, linestyle='--', zorder=0)
-plt.colorbar(img, ax=ax, aspect=50).set_label('Probability')
-plt.legend(loc="upper left")
-plt.tight_layout()  
-plt.savefig('PSD.png',dpi=300)
+    file_path = [os.path.join(data_dir,i) for i in file_list]
+
+    gl, t0, dt, fs, dx, un, ns, nx = extract_metadata(file_path[0], machine_name='optodas')
+
+    new_fs = int(fs / dsamp_factor)        # final sample rate after downsampling
+
+    # %% multi-process to read and decimate lots of files 
+    partial_func = partial(read_decimate, dsamp_factor=dsamp_factor, start_ch=start_ch, end_ch=end_ch, machine_name=machine_name)
+    with Pool(processes=num_proc) as pool:   # pool is closed automatically and join as a list
+        print("# threads: ", num_proc)
+        full_time = pool.map(partial_func, file_path[:])
+
+    # %% concatenate the list elements in time
+    print("concatenating data")
+    full_time_data = np.concatenate(full_time, axis=1)
+
+    print(f'final shape: {full_time_data.shape}')
+
+    ### Convert phase to strain/ strain rate
+    hour_data = full_time_data * correction_factor
+
+    ### Plot PSD
+    fig,ax = plt.subplots(1,1,figsize=(20,10))
+
+    ### divide into several segments, indicated by different colors
+    ch_list = np.arange(half_bin+1,(end_ch-start_ch),channel_interval)[::-1]
+    colors = matplotlib.colormaps['Blues'](np.linspace(0.15, 1, len(ch_list)))[::-1]
+
+    half_bin = int(channel_bin/2)
+
+    for i, chan in tqdm(enumerate(ch_list)):
+        
+        trs = hour_data[chan-half_bin:chan+half_bin,:]
+        if amp_type == 'strain':
+            trs = np.diff(trs, axis=1) * new_fs
+
+        H,xm,ym = ppsd(trs,new_fs,2e-4,1e2)
+        xm,mn,vr = psd_stats(H,xm,ym)
+
+        ax.plot(1/xm, mn,linewidth=5, label='%.1f m' % (chan*dx), zorder=2, color=colors[i])
+        if i == 0:
+            img=ax.pcolormesh(1/xm,ym,H.T,cmap='hot_r',vmin=0,vmax=0.1, zorder=1)
+
+    ax.set_xscale('log')
+    ax.set_yscale('log')   
+    ax.set_ylim([1e-20,1e-9])
+    ax.set_xlabel('Period (s)')
+    ax.set_ylabel('PSD rel. strain rate ^2')
+    ax.grid(which='major', color='#DDDDDD', linewidth=3, zorder=0)
+    ax.grid(which='minor', color='#EEEEEE', linewidth=2, linestyle='--', zorder=0)
+    plt.colorbar(img, ax=ax, aspect=50).set_label('Probability')
+    plt.legend(loc="upper left")
+    plt.tight_layout()  
+    plt.savefig(str(file_path[0])+str(file_path[-1])+'PSD.png',dpi=300)
+
+
+if __name__ == '__main__':
+
+    ppsd_on_fly(data_dir = '/1-fnp/petasaur/p-wd02/muxDAS/20240510/dphi/', 
+                machine_name = 'optodas', 
+                num_proc = 2, 
+                start_ch = 0, 
+                end_ch = 9000, 
+                start_file = 10, 
+                num_file = 360, 
+                dsamp_factor = 1, 
+                channel_bin = 200, 
+                channel_interval = 2000, 
+                correction_factor = (1550.12 * 1e-9) / (0.78 * 4 * np.pi * 1.4677), 
+                amp_type='strain_rate')
