@@ -23,7 +23,7 @@ matplotlib.rcParams['font.sans-serif'] = ['DejaVu Sans']
 matplotlib.rcParams['font.size'] = 20
 
 from functools import partial  # for parallel processing
-from multiprocessing import Pool  # for parallel processing
+from multiprocessing import Pool, get_context  # for parallel processing
 
 
 def extract_metadata(h5file, machine_name='optodas'):
@@ -47,7 +47,7 @@ def extract_metadata(h5file, machine_name='optodas'):
             t0 = fp['header/time'][()]
             dt = fp['header/dt'][()]
             fs = 1./dt
-            dx = fp['header/dx'][()]*10 # not sure why this is incorrect
+            dx = fp['header/dx'][()] # not sure why this is incorrect
             un = fp['header/unit'][()]
             ns = fp['/header/dimensionRanges/dimension0/size'][()]
             nx = fp['/header/dimensionRanges/dimension1/size'][()][0]
@@ -134,7 +134,7 @@ def read_decimate(file_path, dsamp_factor=20, start_ch=0, end_ch=100, machine_na
 
 
 def ppsd_on_fly(data_dir,out_dir, machine_name, num_proc, start_ch, end_ch, start_file, num_file, 
-dsamp_factor, channel_bin, channel_interval, correction_factor, amp_type='strain_rate'):
+dsamp_factor, dx_correct,channel_bin, channel_interval, correction_factor, amp_type='strain_rate', on_macos=False):
     
     file_list = []
     with os.scandir(data_dir) as entries:
@@ -147,13 +147,20 @@ dsamp_factor, channel_bin, channel_interval, correction_factor, amp_type='strain
 
     gl, t0, dt, fs, dx, un, ns, nx = extract_metadata(file_path[0], machine_name='optodas')
 
+    dx = dx * dx_correct
+
     new_fs = int(fs / dsamp_factor)        # final sample rate after downsampling
 
     # %% multi-process to read and decimate lots of files 
     partial_func = partial(read_decimate, dsamp_factor=dsamp_factor, start_ch=start_ch, end_ch=end_ch, machine_name=machine_name)
-    with Pool(processes=num_proc) as pool:   # pool is closed automatically and join as a list
-        print("# threads: ", num_proc)
-        full_time = pool.map(partial_func, file_path[:])
+    if on_macos:
+        with get_context('fork').Pool(processes=num_proc) as pool:   # pool is closed automatically and join as a list
+            print("# threads, using fork context on Mac: ", num_proc)
+            full_time = pool.map(partial_func, file_path[:])
+    else:
+        with Pool(processes=num_proc) as pool:
+            print("# threads: ", num_proc)
+            full_time = pool.map(partial_func, file_path[:])
 
     # %% concatenate the list elements in time
     print("- Concatenating time series")
@@ -203,21 +210,23 @@ dsamp_factor, channel_bin, channel_interval, correction_factor, amp_type='strain
 
 if __name__ == '__main__':
 
-    for starting_id in np.arange(0, 3600, 360):
+    for starting_id in np.arange(0, 1, 1):
         since = time.time()
-        ppsd_on_fly(data_dir = '/1-fnp/petasaur/p-wd02/muxDAS/20240510/dphi/', 
-                    out_dir = '/home/qibins/DAS_spectra/results/',
+        ppsd_on_fly(data_dir = '/Users/qb/Downloads/Archive/data_h5', 
+                    out_dir = '/Users/qb/Downloads/Archive/',
                     machine_name = 'optodas', 
-                    num_proc = 10, 
+                    num_proc = 2, 
                     start_ch = 0, 
                     end_ch = 9000, 
                     start_file = starting_id, 
-                    num_file = 360, 
+                    num_file = 20, 
                     dsamp_factor = 1, 
+                    dx_correct = 5,
                     channel_bin = 200, 
                     channel_interval = 2000, 
                     correction_factor = (1550.12 * 1e-9) / (0.78 * 4 * np.pi * 1.4677), 
-                    amp_type='strain_rate')
+                    amp_type='strain_rate',
+                    on_macos=True)
 
         time_elapsed = time.time() - since
         print('- Time taken: {:.0f}m {:.0f}s'.format(time_elapsed // 60, time_elapsed % 60))
